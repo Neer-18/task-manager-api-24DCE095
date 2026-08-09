@@ -28,11 +28,8 @@ app.use((req, res, next) => {
 });
 
 // In-Memory Database for Tasks
-let tasks = [
-    { id: 1, title: "Learn React Hooks", description: "Understand useState, useEffect, and custom hooks", completed: true },
-    { id: 2, title: "Build Node REST API", description: "Design a task manager backend using Express", completed: false }
-];
-let nextId = 3;
+let tasks = [];
+let nextId = 1;
 
 // 3. Route-Specific Task ID Validator Middleware
 // Validates that :id is a positive integer format before hitting the controller
@@ -103,7 +100,7 @@ app.put('/tasks/:id', validateTaskId, (req, res) => {
         });
     }
 
-    const { title, description, completed } = req.body;
+    const { title, description, completed, status } = req.body;
 
     // Validate fields if provided
     if (title !== undefined && (typeof title !== 'string' || title.trim() === '')) {
@@ -120,12 +117,27 @@ app.put('/tasks/:id', validateTaskId, (req, res) => {
         });
     }
 
+    if (status !== undefined && typeof status !== 'string' && typeof status !== 'boolean') {
+        return res.status(400).json({
+            error: "Bad Request",
+            message: "Validation Error: 'status' must be a string or a boolean."
+        });
+    }
+
+    // Determine target completed status
+    let targetCompleted = tasks[taskIndex].completed;
+    if (completed !== undefined) {
+        targetCompleted = completed;
+    } else if (status !== undefined) {
+        targetCompleted = (status === 'completed' || status === true);
+    }
+
     // Merge changes
     const updatedTask = {
         ...tasks[taskIndex],
         title: title !== undefined ? title.trim() : tasks[taskIndex].title,
         description: description !== undefined ? String(description).trim() : tasks[taskIndex].description,
-        completed: completed !== undefined ? completed : tasks[taskIndex].completed
+        completed: targetCompleted
     };
 
     tasks[taskIndex] = updatedTask;
