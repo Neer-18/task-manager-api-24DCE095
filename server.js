@@ -1,9 +1,19 @@
+require('dotenv').config();
 const express = require('express');
+const mongoose = require('mongoose');
+const Task = require('./models/Task');
+
 const app = express();
 const PORT = process.env.PORT || 5000;
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/taskmanager';
 
 // Parse incoming JSON request bodies
 app.use(express.json());
+
+// Connect to MongoDB
+mongoose.connect(MONGO_URI)
+    .then(() => console.log('🔌 Connected to MongoDB successfully'))
+    .catch((err) => console.error('❌ MongoDB connection error:', err));
 
 // 1. Global Request Logger Middleware
 app.use((req, res, next) => {
@@ -13,7 +23,6 @@ app.use((req, res, next) => {
 });
 
 // 2. Content-Type Validation Middleware
-// Rejects POST and PUT requests that do not specify application/json Content-Type
 app.use((req, res, next) => {
     if (req.method === 'POST' || req.method === 'PUT') {
         const contentType = req.headers['content-type'];
@@ -27,143 +36,126 @@ app.use((req, res, next) => {
     next();
 });
 
-// In-Memory Database for Tasks
-let tasks = [];
-let nextId = 1;
-
 // 3. Route-Specific Task ID Validator Middleware
-// Validates that :id is a positive integer format before hitting the controller
+// Validates that :id matches a 24-character hexadecimal MongoDB ObjectId
 const validateTaskId = (req, res, next) => {
-    const idStr = req.params.id;
-    const parsedId = parseInt(idStr, 10);
-    
-    // Ensure the ID is a valid number, positive, and matches the input string exactly (no decimals or trailing characters)
-    if (isNaN(parsedId) || parsedId <= 0 || String(parsedId) !== idStr) {
+    const id = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
         return res.status(400).json({
             error: "Bad Request",
-            message: "Task ID parameter must be a valid positive integer."
+            message: "Task ID parameter must be a valid 24-character hexadecimal MongoDB ObjectId."
         });
     }
-    req.taskId = parsedId; // Pass parsed numeric ID forward
     next();
 };
 
-// --- CRUD Endpoints ---
+// --- CRUD Endpoints using Mongoose ---
 
-// GET /tasks - Get all tasks
-app.get('/tasks', (req, res) => {
-    res.status(200).json(tasks);
+// GET /tasks - Get all tasks from MongoDB
+app.get('/tasks', async (req, res, next) => {
+    try {
+        const tasks = await Task.find().sort({ createdAt: -1 });
+        res.status(200).json(tasks);
+    } catch (err) {
+        next(err);
+    }
 });
 
 // GET /tasks/:id - Get a specific task by ID
-app.get('/tasks/:id', validateTaskId, (req, res) => {
-    const task = tasks.find(t => t.id === req.taskId);
-    if (!task) {
-        return res.status(404).json({
-            error: "Not Found",
-            message: `Task with ID ${req.taskId} was not found.`
-        });
+app.get('/tasks/:id', validateTaskId, async (req, res, next) => {
+    try {
+        const task = await Task.findById(req.params.id);
+        if (!task) {
+            return res.status(404).json({
+                error: "Not Found",
+                message: `Task with ID ${req.params.id} was not found.`
+            });
+        }
+        res.status(200).json(task);
+    } catch (err) {
+        next(err);
     }
-    res.status(200).json(task);
 });
 
-// POST /tasks - Create a new task
-app.post('/tasks', (req, res) => {
-    const { title, description } = req.body;
+// POST /tasks - Create a new task in MongoDB (enforces schema validation)
+app.post('/tasks', async (req, res, next) => {
+    try {
+        const { title, description, priority } = req.body;
 
-    // Validate that title exists and is non-empty
-    if (!title || typeof title !== 'string' || title.trim() === '') {
-        return res.status(400).json({
-            error: "Bad Request",
-            message: "Validation Error: 'title' is a required field and must be a non-empty string."
+        const newTask = new Task({
+            title,
+            description,
+            priority
         });
+
+        const savedTask = await newTask.save();
+        res.status(201).json(savedTask);
+    } catch (err) {
+        next(err);
     }
-
-    const newTask = {
-        id: nextId++,
-        title: title.trim(),
-        description: description ? String(description).trim() : "",
-        completed: false
-    };
-
-    tasks.push(newTask);
-    res.status(201).json(newTask);
 });
 
 // PUT /tasks/:id - Update an existing task by ID
-app.put('/tasks/:id', validateTaskId, (req, res) => {
-    const taskIndex = tasks.findIndex(t => t.id === req.taskId);
-    if (taskIndex === -1) {
-        return res.status(404).json({
-            error: "Not Found",
-            message: `Task with ID ${req.taskId} was not found.`
-        });
+app.put('/tasks/:id', validateTaskId, async (req, res, next) => {
+    try {
+        const { title, description, completed, priority, status } = req.body;
+
+        // Support both boolean completed and string status payload updates
+        let targetCompleted;
+        if (completed !== undefined) {
+            targetCompleted = completed;
+        } else if (status !== undefined) {
+            targetCompleted = (status === 'completed' || status === true);
+        }
+
+        // Prepare the updates to apply
+        const updateData = {};
+        if (title !== undefined) updateData.title = title;
+        if (description !== undefined) updateData.description = description;
+        if (targetCompleted !== undefined) updateData.completed = targetCompleted;
+        if (priority !== undefined) updateData.priority = priority;
+
+        // findByIdAndUpdate with validation run on modifications
+        const updatedTask = await Task.findByIdAndUpdate(
+            req.params.id,
+            updateData,
+            { new: true, runValidators: true }
+        );
+
+        if (!updatedTask) {
+            return res.status(404).json({
+                error: "Not Found",
+                message: `Task with ID ${req.params.id} was not found.`
+            });
+        }
+
+        res.status(200).json(updatedTask);
+    } catch (err) {
+        next(err);
     }
-
-    const { title, description, completed, status } = req.body;
-
-    // Validate fields if provided
-    if (title !== undefined && (typeof title !== 'string' || title.trim() === '')) {
-        return res.status(400).json({
-            error: "Bad Request",
-            message: "Validation Error: 'title' must be a non-empty string."
-        });
-    }
-
-    if (completed !== undefined && typeof completed !== 'boolean') {
-        return res.status(400).json({
-            error: "Bad Request",
-            message: "Validation Error: 'completed' must be a boolean."
-        });
-    }
-
-    if (status !== undefined && typeof status !== 'string' && typeof status !== 'boolean') {
-        return res.status(400).json({
-            error: "Bad Request",
-            message: "Validation Error: 'status' must be a string or a boolean."
-        });
-    }
-
-    // Determine target completed status
-    let targetCompleted = tasks[taskIndex].completed;
-    if (completed !== undefined) {
-        targetCompleted = completed;
-    } else if (status !== undefined) {
-        targetCompleted = (status === 'completed' || status === true);
-    }
-
-    // Merge changes
-    const updatedTask = {
-        ...tasks[taskIndex],
-        title: title !== undefined ? title.trim() : tasks[taskIndex].title,
-        description: description !== undefined ? String(description).trim() : tasks[taskIndex].description,
-        completed: targetCompleted
-    };
-
-    tasks[taskIndex] = updatedTask;
-    res.status(200).json(updatedTask);
 });
 
-// DELETE /tasks/:id - Delete a task by ID
-app.delete('/tasks/:id', validateTaskId, (req, res) => {
-    const taskIndex = tasks.findIndex(t => t.id === req.taskId);
-    if (taskIndex === -1) {
-        return res.status(404).json({
-            error: "Not Found",
-            message: `Task with ID ${req.taskId} was not found.`
+// DELETE /tasks/:id - Delete a task by ID from MongoDB
+app.delete('/tasks/:id', validateTaskId, async (req, res, next) => {
+    try {
+        const deletedTask = await Task.findByIdAndDelete(req.params.id);
+        if (!deletedTask) {
+            return res.status(404).json({
+                error: "Not Found",
+                message: `Task with ID ${req.params.id} was not found.`
+            });
+        }
+        res.status(200).json({
+            message: "Task successfully deleted.",
+            task: deletedTask
         });
+    } catch (err) {
+        next(err);
     }
-
-    const deletedTask = tasks.splice(taskIndex, 1)[0];
-    res.status(200).json({
-        message: "Task successfully deleted.",
-        task: deletedTask
-    });
 });
 
 // GET /simulate-error - Deliberate error endpoint to test the Global Error Handler
 app.get('/simulate-error', (req, res, next) => {
-    // Throwing error inside a synchronous route handler will automatically pass to next() by Express
     throw new Error("Simulated Server Crash Error.");
 });
 
@@ -176,12 +168,32 @@ app.use((req, res, next) => {
 });
 
 // 5. Global Centralized Error Handling Middleware
-// Defined last to catch all uncaught exceptions
 app.use((err, req, res, next) => {
+    // Handle Mongoose Validation Error (returns clean, structured JSON detailing failed fields)
+    if (err.name === 'ValidationError') {
+        const details = {};
+        for (let key in err.errors) {
+            details[key] = err.errors[key].message;
+        }
+        return res.status(400).json({
+            error: "Validation Error",
+            message: "Data validation failed.",
+            details
+        });
+    }
+
+    // Handle Mongoose Cast Error (e.g. malformed ObjectId query values)
+    if (err.name === 'CastError') {
+        return res.status(400).json({
+            error: "Bad Request",
+            message: `Invalid format for field '${err.path}' value: '${err.value}'.`
+        });
+    }
+
     console.error(`[Global Error Handler] Stack Trace: ${err.stack}`);
     
-    // Send a sanitized error response to the client (omit stack trace for security reasons)
-    res.status(500).json({
+    // Sanitized JSON response for standard uncaught errors
+    res.status(err.status || 500).json({
         error: "Internal Server Error",
         message: "Something went wrong on the server. Please try again later."
     });
