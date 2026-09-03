@@ -87,3 +87,35 @@ Below are example queries to test the API routes:
   ```bash
   curl -i http://localhost:5000/simulate-error
   ```
+
+---
+
+## 🌐 Practical 6: Full Stack Integration (React + Node + MongoDB)
+
+### 🔌 CORS Middleware Configuration
+To allow the React frontend running on `http://localhost:5173` to interact with this Express backend running on `http://localhost:5000`, the `cors` package is configured:
+```javascript
+const cors = require('cors');
+app.use(cors());
+```
+This enables:
+- Cross-Origin Resource Sharing for all HTTP methods (`GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`).
+- Automatic preflight `OPTIONS` resolution.
+- Secure communication between the Vite dev server and the Express API.
+
+### 🔄 End-to-End Execution
+1. Ensure your MongoDB Atlas connection string is configured in `.env`:
+   ```env
+   MONGO_URI=mongodb+srv://<username>:<password>@cluster0.mongodb.net/taskmanager?retryWrites=true&w=majority
+   PORT=5000
+   ```
+2. Start this backend server in terminal 1:
+   ```bash
+   npm run dev
+   ```
+3. Start the React frontend in terminal 2 (`portfolio-24DCE095/student-portfolio`):
+   ```bash
+   npm run dev
+   ```
+4. Access `http://localhost:5173/tasks` in your browser. All CRUD actions initiated from the React UI will persist directly to MongoDB via this API.
+

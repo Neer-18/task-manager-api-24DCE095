@@ -1,11 +1,15 @@
 require('dotenv').config();
 const express = require('express');
+const cors = require('cors');
 const mongoose = require('mongoose');
 const Task = require('./models/Task');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/taskmanager';
+
+// Enable CORS for cross-origin requests (e.g. React frontend on localhost:5173)
+app.use(cors());
 
 // Parse incoming JSON request bodies
 app.use(express.json());
