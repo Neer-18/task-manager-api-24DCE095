@@ -2,7 +2,17 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+
 const Task = require('./models/Task');
+const User = require('./models/User');
+const { authenticateToken } = require('./middleware/auth');
+const {
+    validateRegisterInput,
+    validateLoginInput,
+    validateTaskInput
+} = require('./middleware/validator');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -53,20 +63,133 @@ const validateTaskId = (req, res, next) => {
     next();
 };
 
-// --- CRUD Endpoints using Mongoose ---
+// ==========================================
+// --- AUTHENTICATION ROUTES (Practical 7) ---
+// ==========================================
 
-// GET /tasks - Get all tasks from MongoDB
-app.get('/tasks', async (req, res, next) => {
+// POST /register - Register a new user with hashed password
+app.post('/register', validateRegisterInput, async (req, res, next) => {
     try {
-        const tasks = await Task.find().sort({ createdAt: -1 });
+        const { name, email, password } = req.body;
+        const normalizedEmail = email.toLowerCase().trim();
+
+        // Check for duplicate account
+        const existingUser = await User.findOne({ email: normalizedEmail });
+        if (existingUser) {
+            return res.status(400).json({
+                error: "Validation Error",
+                message: "An account with this email address already exists."
+            });
+        }
+
+        // Hash password with bcryptjs (10 salt rounds)
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const newUser = await User.create({
+            name: name.trim(),
+            email: normalizedEmail,
+            password: hashedPassword
+        });
+
+        res.status(201).json({
+            message: "User registered successfully.",
+            user: {
+                id: newUser._id,
+                name: newUser.name,
+                email: newUser.email,
+                createdAt: newUser.createdAt
+            }
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// POST /login - Authenticate user and issue signed JWT
+app.post('/login', validateLoginInput, async (req, res, next) => {
+    try {
+        const { email, password } = req.body;
+        const normalizedEmail = email.toLowerCase().trim();
+
+        // Fine-Tuning 1: Explicitly select '+password' because schema sets select: false
+        const user = await User.findOne({ email: normalizedEmail }).select('+password');
+        if (!user) {
+            return res.status(401).json({
+                error: "Unauthorized",
+                message: "Invalid email or password."
+            });
+        }
+
+        // Compare input password with stored bcrypt hash
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(401).json({
+                error: "Unauthorized",
+                message: "Invalid email or password."
+            });
+        }
+
+        // Generate JWT token with 1-hour expiration
+        const token = jwt.sign(
+            { id: user._id, email: user.email, name: user.name },
+            process.env.JWT_SECRET,
+            { expiresIn: '1h' }
+        );
+
+        res.status(200).json({
+            message: "Login successful.",
+            token,
+            user: {
+                id: user._id,
+                name: user.name,
+                email: user.email
+            }
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// GET /me - Return currently logged-in user profile (Supplementary Problem 1)
+// Protected by authenticateToken middleware
+app.get('/me', authenticateToken, async (req, res, next) => {
+    try {
+        // Password is automatically excluded because of select: false
+        const user = await User.findById(req.user.id);
+        if (!user) {
+            return res.status(404).json({
+                error: "Not Found",
+                message: "User account not found."
+            });
+        }
+
+        res.status(200).json({
+            id: user._id,
+            name: user.name,
+            email: user.email,
+            createdAt: user.createdAt
+        });
+    } catch (err) {
+        next(err);
+    }
+});
+
+// ===============================================
+// --- PROTECTED TASK ROUTES (Middleware Chain) ---
+// ===============================================
+
+// GET /tasks - Get all tasks for authenticated user (Strict multi-user isolation)
+app.get('/tasks', authenticateToken, async (req, res, next) => {
+    try {
+        const tasks = await Task.find({ user: req.user.id }).sort({ createdAt: -1 });
         res.status(200).json(tasks);
     } catch (err) {
         next(err);
     }
 });
 
-// GET /tasks/:id - Get a specific task by ID
-app.get('/tasks/:id', validateTaskId, async (req, res, next) => {
+// GET /tasks/:id - Get a specific task by ID (Scoped to owner)
+app.get('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) => {
     try {
         const task = await Task.findById(req.params.id);
         if (!task) {
@@ -75,21 +198,29 @@ app.get('/tasks/:id', validateTaskId, async (req, res, next) => {
                 message: `Task with ID ${req.params.id} was not found.`
             });
         }
+        if (task.user && task.user.toString() !== req.user.id) {
+            return res.status(403).json({
+                error: "Forbidden",
+                message: "You do not have permission to view this task."
+            });
+        }
         res.status(200).json(task);
     } catch (err) {
         next(err);
     }
 });
 
-// POST /tasks - Create a new task in MongoDB (enforces schema validation)
-app.post('/tasks', async (req, res, next) => {
+// POST /tasks - Create a task
+// Fine-Tuning 3: Sequential middleware order: authenticateToken -> validateTaskInput -> Controller
+app.post('/tasks', authenticateToken, validateTaskInput, async (req, res, next) => {
     try {
         const { title, description, priority } = req.body;
 
         const newTask = new Task({
             title,
             description,
-            priority
+            priority,
+            user: req.user.id
         });
 
         const savedTask = await newTask.save();
@@ -99,12 +230,25 @@ app.post('/tasks', async (req, res, next) => {
     }
 });
 
-// PUT /tasks/:id - Update an existing task by ID
-app.put('/tasks/:id', validateTaskId, async (req, res, next) => {
+// PUT /tasks/:id - Update an existing task by ID (Owner verification)
+app.put('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) => {
     try {
+        const existingTask = await Task.findById(req.params.id);
+        if (!existingTask) {
+            return res.status(404).json({
+                error: "Not Found",
+                message: `Task with ID ${req.params.id} was not found.`
+            });
+        }
+        if (existingTask.user && existingTask.user.toString() !== req.user.id) {
+            return res.status(403).json({
+                error: "Forbidden",
+                message: "You do not have permission to modify this task."
+            });
+        }
+
         const { title, description, completed, priority, status } = req.body;
 
-        // Support both boolean completed and string status payload updates
         let targetCompleted;
         if (completed !== undefined) {
             targetCompleted = completed;
@@ -112,26 +256,17 @@ app.put('/tasks/:id', validateTaskId, async (req, res, next) => {
             targetCompleted = (status === 'completed' || status === true);
         }
 
-        // Prepare the updates to apply
         const updateData = {};
         if (title !== undefined) updateData.title = title;
         if (description !== undefined) updateData.description = description;
         if (targetCompleted !== undefined) updateData.completed = targetCompleted;
         if (priority !== undefined) updateData.priority = priority;
 
-        // findByIdAndUpdate with validation run on modifications
         const updatedTask = await Task.findByIdAndUpdate(
             req.params.id,
             updateData,
             { new: true, runValidators: true }
         );
-
-        if (!updatedTask) {
-            return res.status(404).json({
-                error: "Not Found",
-                message: `Task with ID ${req.params.id} was not found.`
-            });
-        }
 
         res.status(200).json(updatedTask);
     } catch (err) {
@@ -139,16 +274,24 @@ app.put('/tasks/:id', validateTaskId, async (req, res, next) => {
     }
 });
 
-// DELETE /tasks/:id - Delete a task by ID from MongoDB
-app.delete('/tasks/:id', validateTaskId, async (req, res, next) => {
+// DELETE /tasks/:id - Delete a task by ID from MongoDB (Owner verification)
+app.delete('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) => {
     try {
-        const deletedTask = await Task.findByIdAndDelete(req.params.id);
-        if (!deletedTask) {
+        const existingTask = await Task.findById(req.params.id);
+        if (!existingTask) {
             return res.status(404).json({
                 error: "Not Found",
                 message: `Task with ID ${req.params.id} was not found.`
             });
         }
+        if (existingTask.user && existingTask.user.toString() !== req.user.id) {
+            return res.status(403).json({
+                error: "Forbidden",
+                message: "You do not have permission to delete this task."
+            });
+        }
+
+        const deletedTask = await Task.findByIdAndDelete(req.params.id);
         res.status(200).json({
             message: "Task successfully deleted.",
             task: deletedTask
@@ -173,7 +316,7 @@ app.use((req, res, next) => {
 
 // 5. Global Centralized Error Handling Middleware
 app.use((err, req, res, next) => {
-    // Handle Mongoose Validation Error (returns clean, structured JSON detailing failed fields)
+    // Handle Mongoose Validation Error (returns clean, structured JSON)
     if (err.name === 'ValidationError') {
         const details = {};
         for (let key in err.errors) {

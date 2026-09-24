@@ -119,3 +119,57 @@ This enables:
    ```
 4. Access `http://localhost:5173/tasks` in your browser. All CRUD actions initiated from the React UI will persist directly to MongoDB via this API.
 
+---
+
+## 🔐 Practical 7: Authentication and Middleware Pipeline
+
+### 🛡️ Architecture & Security Pipeline
+```
+POST /register ──► Hash password (bcryptjs salt 10) ──► Save User to MongoDB (password hidden via select: false)
+POST /login    ──► Compare bcrypt hash               ──► Issue JWT (1 hour expiry)
+
+Protected Route Pipeline:
+Client Request (Authorization: Bearer <token>)
+  │
+  ├──► [1. Logging Middleware]
+  ├──► [2. Content-Type Check]
+  ├──► [3. Auth Middleware (authenticateToken)] ──► Checks Bearer token with jwt.verify()
+  │                                            ──► 401 if missing / TokenExpiredError
+  │                                            ──► 403 if invalid / tampered
+  ├──► [4. Validation Middleware]              ──► Checks required fields before DB query
+  ├──► [5. Task ID Validator]                  ──► Validates 24-char hex ObjectId
+  └──► [6. Controller Endpoint]                ──► Scoped to req.user.id
+```
+
+### 📋 Authentication Endpoints
+| Method | Endpoint | Protection | Description | Status Code |
+| :--- | :--- | :--- | :--- | :--- |
+| **POST** | `/register` | Public | Register new user with hashed password | `201 Created` / `400 Bad Request` |
+| **POST** | `/login` | Public | Authenticate user and return signed JWT | `200 OK` / `401 Unauthorized` |
+| **GET** | `/me` | Protected | Return logged-in user profile (no password) | `200 OK` / `401 Unauthorized` |
+| **GET** | `/tasks` | Protected | Retrieve tasks for authenticated user | `200 OK` / `401 Unauthorized` |
+| **POST** | `/tasks` | Protected | Create task linked to authenticated user | `201 Created` / `401 Unauthorized` |
+| **PUT** | `/tasks/:id` | Protected | Update task | `200 OK` / `401 Unauthorized` |
+| **DELETE**| `/tasks/:id` | Protected | Delete task | `200 OK` / `401 Unauthorized` |
+
+### 🧪 cURL Examples for Practical 7
+- **Register**:
+  ```bash
+  curl -i -X POST -H "Content-Type: application/json" -d "{\"name\":\"Neer Patel\",\"email\":\"neer@example.com\",\"password\":\"Secret123\"}" http://localhost:5000/register
+  ```
+- **Login**:
+  ```bash
+  curl -i -X POST -H "Content-Type: application/json" -d "{\"email\":\"neer@example.com\",\"password\":\"Secret123\"}" http://localhost:5000/login
+  ```
+- **Access Protected Profile (`/me`)**:
+  ```bash
+  curl -i -H "Authorization: Bearer <PASTE_TOKEN>" http://localhost:5000/me
+  ```
+- **Access Protected Tasks**:
+  ```bash
+  curl -i -H "Authorization: Bearer <PASTE_TOKEN>" http://localhost:5000/tasks
+  ```
+- **Test Unauthorized Request (Missing Token)**:
+  ```bash
+  curl -i http://localhost:5000/tasks
+  ```
