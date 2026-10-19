@@ -13,6 +13,11 @@ const {
     validateLoginInput,
     validateTaskInput
 } = require('./middleware/validator');
+const cache = require('./cache');
+
+// In-Memory Cache Stats Tracking (Practical 9 Supplementary Problem 2)
+let cacheHits = 0;
+let cacheMisses = 0;
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -178,19 +183,89 @@ app.get('/me', authenticateToken, async (req, res, next) => {
 // --- PROTECTED TASK ROUTES (Middleware Chain) ---
 // ===============================================
 
-// GET /tasks - Get all tasks for authenticated user (Strict multi-user isolation)
+// ====================================================
+// --- IN-MEMORY CACHE DEBUG ENDPOINTS (Practical 9) ---
+// ====================================================
+
+// GET /cache/stats - Retrieve real-time cache metrics and hit/miss counts (Supplementary Problem 2)
+app.get('/cache/stats', (req, res) => {
+    const keys = cache.keys();
+    const stats = cache.getStats();
+    const total = cacheHits + cacheMisses;
+    const hitRatio = total > 0 ? ((cacheHits / total) * 100).toFixed(2) + '%' : '0.00%';
+
+    res.status(200).json({
+        status: "active",
+        stdTTL: 60,
+        totalRequests: total,
+        cacheHits,
+        cacheMisses,
+        hitRatio,
+        cachedKeysCount: keys.length,
+        cachedKeys: keys,
+        nodeCacheStats: stats
+    });
+});
+
+// POST /cache/flush - Invalidate all cache entries manually (benchmarking helper)
+app.post('/cache/flush', (req, res) => {
+    cache.flushAll();
+    cacheHits = 0;
+    cacheMisses = 0;
+    res.status(200).json({ message: "In-memory cache successfully flushed." });
+});
+
+// ===============================================
+// --- PROTECTED TASK ROUTES (Middleware Chain) ---
+// ===============================================
+
+// GET /tasks - Get all tasks for authenticated user (In-Memory Cached with 60s TTL)
 app.get('/tasks', authenticateToken, async (req, res, next) => {
     try {
+        const cacheKey = `tasks_${req.user.id}`;
+        const cachedTasks = cache.get(cacheKey);
+
+        if (cachedTasks) {
+            cacheHits++;
+            res.setHeader('X-Cache', 'HIT');
+            return res.status(200).json(cachedTasks);
+        }
+
+        // Cache MISS: Query MongoDB Atlas
+        cacheMisses++;
         const tasks = await Task.find({ user: req.user.id }).sort({ createdAt: -1 });
+
+        // Store query result in cache with 60-second TTL
+        cache.set(cacheKey, tasks, 60);
+
+        res.setHeader('X-Cache', 'MISS');
         res.status(200).json(tasks);
     } catch (err) {
         next(err);
     }
 });
 
-// GET /tasks/:id - Get a specific task by ID (Scoped to owner)
+// GET /tasks/:id - Get a specific task by ID (Cached separately - Supplementary Problem 1)
 app.get('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) => {
     try {
+        const cacheKey = `task_${req.params.id}`;
+        const cachedTask = cache.get(cacheKey);
+
+        if (cachedTask) {
+            // Verify ownership of cached document
+            if (cachedTask.user && cachedTask.user.toString() !== req.user.id) {
+                return res.status(403).json({
+                    error: "Forbidden",
+                    message: "You do not have permission to view this task."
+                });
+            }
+            cacheHits++;
+            res.setHeader('X-Cache', 'HIT');
+            return res.status(200).json(cachedTask);
+        }
+
+        // Cache MISS: Query MongoDB Atlas
+        cacheMisses++;
         const task = await Task.findById(req.params.id);
         if (!task) {
             return res.status(404).json({
@@ -204,14 +279,19 @@ app.get('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) 
                 message: "You do not have permission to view this task."
             });
         }
+
+        // Store single task in cache
+        cache.set(cacheKey, task, 60);
+
+        res.setHeader('X-Cache', 'MISS');
         res.status(200).json(task);
     } catch (err) {
         next(err);
     }
 });
 
-// POST /tasks - Create a task
-// Fine-Tuning 3: Sequential middleware order: authenticateToken -> validateTaskInput -> Controller
+// POST /tasks - Create a task (Invalidates user's task list cache)
+// Sequential middleware order: authenticateToken -> validateTaskInput -> Controller
 app.post('/tasks', authenticateToken, validateTaskInput, async (req, res, next) => {
     try {
         const { title, description, priority } = req.body;
@@ -224,13 +304,17 @@ app.post('/tasks', authenticateToken, validateTaskInput, async (req, res, next) 
         });
 
         const savedTask = await newTask.save();
+
+        // Invalidate cached task list so newly added task is immediately visible
+        cache.del(`tasks_${req.user.id}`);
+
         res.status(201).json(savedTask);
     } catch (err) {
         next(err);
     }
 });
 
-// PUT /tasks/:id - Update an existing task by ID (Owner verification)
+// PUT /tasks/:id - Update an existing task by ID (Invalidates all_tasks and single task cache)
 app.put('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) => {
     try {
         const existingTask = await Task.findById(req.params.id);
@@ -268,13 +352,17 @@ app.put('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) 
             { new: true, runValidators: true }
         );
 
+        // Invalidate both the task list and the specific task key to prevent stale reads
+        cache.del(`tasks_${req.user.id}`);
+        cache.del(`task_${req.params.id}`);
+
         res.status(200).json(updatedTask);
     } catch (err) {
         next(err);
     }
 });
 
-// DELETE /tasks/:id - Delete a task by ID from MongoDB (Owner verification)
+// DELETE /tasks/:id - Delete a task by ID (Invalidates all_tasks and single task cache)
 app.delete('/tasks/:id', authenticateToken, validateTaskId, async (req, res, next) => {
     try {
         const existingTask = await Task.findById(req.params.id);
@@ -292,6 +380,11 @@ app.delete('/tasks/:id', authenticateToken, validateTaskId, async (req, res, nex
         }
 
         const deletedTask = await Task.findByIdAndDelete(req.params.id);
+
+        // Invalidate cache immediately on deletion
+        cache.del(`tasks_${req.user.id}`);
+        cache.del(`task_${req.params.id}`);
+
         res.status(200).json({
             message: "Task successfully deleted.",
             task: deletedTask

@@ -173,3 +173,73 @@ Client Request (Authorization: Bearer <token>)
   ```bash
   curl -i http://localhost:5000/tasks
   ```
+
+---
+
+## ⚡ Practical 9: In-Memory Caching and Query Optimization
+
+**CO / PO Mapping:** CO2, CO4 / PO3, PO5  
+**Objective:** To implement server-side in-memory caching using `node-cache`, enforce strict cache invalidation on write operations, and measure the empirical reduction in API response times.
+
+### 📐 In-Memory Caching Architecture
+
+```
+GET /tasks or GET /tasks/:id Request (with Bearer Token)
+  │
+  ▼
+[Check In-Memory Cache (node-cache)]
+  ├──► CACHE HIT (Response header: X-Cache: HIT)
+  │       └──► Return cached JSON directly from server RAM (sub-5ms)
+  │
+  └──► CACHE MISS (Response header: X-Cache: MISS)
+          └──► Query MongoDB Atlas (network I/O round-trip)
+          └──► Store response in cache (Key: tasks_<userId>, TTL: 60s)
+          └──► Return JSON to client
+
+Write Operations (POST /tasks, PUT /tasks/:id, DELETE /tasks/:id)
+  │
+  ▼
+1. Persist mutation to MongoDB Atlas
+2. Invalidate cache:
+     - cache.del(`tasks_${req.user.id}`)
+     - cache.del(`task_${req.params.id}`)
+3. Next GET request triggers a fresh query (prevents stale data)
+```
+
+---
+
+### 📊 Response Time Comparison (Postman / Empirical Readings)
+
+Empirical response times measured on `GET /tasks` comparing cold database roundtrips (Cache MISS) against RAM cache hits (Cache HIT):
+
+| Run # | Uncached / Cache MISS (MongoDB Atlas Query) | Cached / Cache HIT (`node-cache` RAM) | Speedup / Reduction | Header |
+| :---: | :---: | :---: | :---: | :---: |
+| **Reading 1** | **56.52 ms** | **19.47 ms** | **~65.5% faster** | `X-Cache: HIT` |
+| **Reading 2** | **59.74 ms** | **15.46 ms** | **~74.1% faster** | `X-Cache: HIT` |
+| **Reading 3** | **54.65 ms** | **2.20 ms** | **~96.0% faster** | `X-Cache: HIT` |
+| **Average** | **56.97 ms** | **12.38 ms** | **~78.3% Average Latency Reduction** | |
+
+---
+
+### 🛠️ Endpoints Added in Practical 9
+
+| Method | Endpoint | Protection | Description | Response / Action |
+| :--- | :--- | :--- | :--- | :--- |
+| **GET** | `/tasks` | Protected | Returns user tasks with in-memory caching (TTL: 60s) | Headers: `X-Cache: HIT` or `MISS` |
+| **GET** | `/tasks/:id` | Protected | Single-task cached independently (`task_<id>`) | Headers: `X-Cache: HIT` or `MISS` |
+| **POST** | `/tasks` | Protected | Creates task and invalidates `tasks_<userId>` | Clears stale cache key |
+| **PUT** | `/tasks/:id` | Protected | Updates task and invalidates list + item cache | Clears `tasks_<userId>` & `task_<id>` |
+| **DELETE**| `/tasks/:id` | Protected | Deletes task and invalidates list + item cache | Clears `tasks_<userId>` & `task_<id>` |
+| **GET** | `/cache/stats` | Public | Real-time cache metrics & hit/miss counter | `{ cacheHits, cacheMisses, hitRatio, keys }` |
+| **POST** | `/cache/flush` | Public | Flushes all in-memory keys for benchmarking | `{ message: "Cache flushed" }` |
+
+---
+
+### 💡 Viva & Theoretical Analysis
+
+1. **Why must the cache be invalidated on every write operation?**
+   - If the cache is not invalidated on write operations (`POST`, `PUT`, `DELETE`), users will receive stale (outdated or phantom) data until the TTL expires. Invalidation guarantees strong consistency between the database and memory.
+2. **What is a reasonable TTL and what trade-off does it represent?**
+   - For interactive task management, a TTL of 30–60 seconds strikes the optimal balance. A longer TTL yields higher hit ratios and reduces database load, but increases the risk of serving stale data if external database updates occur. A shorter TTL ensures fresh data but increases database read frequency.
+3. **Why is `node-cache` (in-memory) not suitable for multi-server deployments?**
+   - `node-cache` stores data in the local Node.js process heap memory. In multi-instance or load-balanced environments (e.g., Kubernetes, PM2 clusters), each server maintains an isolated memory space. An update on Server A would not invalidate the cache on Server B, resulting in inconsistent data. Distributed caching solutions like **Redis** or **Memcached** are required for horizontal scaling.
