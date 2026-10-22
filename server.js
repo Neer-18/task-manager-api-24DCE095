@@ -217,6 +217,133 @@ app.post('/cache/flush', (req, res) => {
     res.status(200).json({ message: "In-memory cache successfully flushed." });
 });
 
+// ====================================================================
+// --- PRACTICAL 13: AI API INTEGRATION & RESPONSIBLE AI USAGE ---
+// ====================================================================
+
+// Rate limiter storage: IP / User -> last request timestamp (Supplementary Problem 2)
+const aiRateLimitMap = new Map();
+const AI_RATE_LIMIT_COOLDOWN_MS = 15000; // 15 seconds per client
+
+// Intelligent Context-Aware Fallback Generator (Graceful Degradation)
+function generateSmartFallback(title) {
+    const lower = (title || '').toLowerCase();
+    if (lower.includes('bug') || lower.includes('fix') || lower.includes('error')) {
+        return `Investigate, isolate, and debug root cause for "${title}". Document resolution steps and verify regression tests.`;
+    } else if (lower.includes('design') || lower.includes('ui') || lower.includes('frontend')) {
+        return `Draft wireframes, implement responsive UI components, and align styles for "${title}" with design guidelines.`;
+    } else if (lower.includes('test') || lower.includes('qa') || lower.includes('ci')) {
+        return `Write automated integration tests for "${title}", execute test suites, and review test coverage thresholds.`;
+    } else if (lower.includes('deploy') || lower.includes('docker') || lower.includes('prod')) {
+        return `Prepare container configuration, verify environment secrets, and deploy "${title}" to cloud staging.`;
+    }
+    return `Plan, coordinate with team members, and implement core deliverables for "${title}" adhering to project milestones.`;
+}
+
+function determineFallbackPriority(title) {
+    const lower = (title || '').toLowerCase();
+    if (lower.includes('critical') || lower.includes('urgent') || lower.includes('fix') || lower.includes('bug') || lower.includes('security')) {
+        return 'high';
+    } else if (lower.includes('refactor') || lower.includes('docs') || lower.includes('minor') || lower.includes('cleanup')) {
+        return 'low';
+    }
+    return 'medium';
+}
+
+// POST /api/ai/generate-description - AI Description Generation Endpoint (Protected / Public with Rate Limiting)
+app.post('/api/ai/generate-description', async (req, res) => {
+    try {
+        const { title } = req.body;
+        if (!title || !title.trim()) {
+            return res.status(400).json({
+                error: "Bad Request",
+                message: "Task title is required to generate an AI description."
+            });
+        }
+
+        const clientKey = req.ip || req.headers['x-forwarded-for'] || 'anonymous_client';
+        const now = Date.now();
+        const lastRequest = aiRateLimitMap.get(clientKey);
+
+        // Supplementary Problem 2: Enforce client rate limiting to prevent excessive API costs
+        if (lastRequest && (now - lastRequest) < AI_RATE_LIMIT_COOLDOWN_MS) {
+            const waitSeconds = Math.ceil((AI_RATE_LIMIT_COOLDOWN_MS - (now - lastRequest)) / 1000);
+            return res.status(429).json({
+                error: "Rate Limit Exceeded",
+                message: `Too many AI generation requests. Please wait ${waitSeconds}s before requesting again.`,
+                retryAfter: waitSeconds
+            });
+        }
+        aiRateLimitMap.set(clientKey, now);
+
+        const apiKey = process.env.OPENAI_API_KEY;
+
+        // Graceful Degradation: If no API key configured or offline dummy key used
+        if (!apiKey || apiKey === 'your_key_here' || apiKey.startsWith('sk-dummy')) {
+            return res.status(200).json({
+                description: generateSmartFallback(title),
+                suggestedPriority: determineFallbackPriority(title),
+                fallback: true,
+                disclaimer: "⚠️ Note: Offline / Fallback mode active. This suggestion was generated locally. Please review before saving."
+            });
+        }
+
+        // Live API Call with timeout protection
+        try {
+            const OpenAI = require('openai');
+            const client = new OpenAI({ apiKey: apiKey.trim(), timeout: 8000 });
+
+            const completion = await client.chat.completions.create({
+                model: 'gpt-4o-mini',
+                messages: [
+                    {
+                        role: 'system',
+                        content: 'You are a helpful project management assistant. Return concise actionable task descriptions (1-2 sentences) and suggest a priority level ("low", "medium", or "high").'
+                    },
+                    {
+                        role: 'user',
+                        content: `Provide a short description and suggested priority for a task titled: "${title}". Return as valid JSON with keys "description" and "suggestedPriority".`
+                    }
+                ],
+                max_tokens: 150,
+                temperature: 0.7
+            });
+
+            const content = completion.choices[0].message.content;
+            let parsed = {};
+            try {
+                parsed = JSON.parse(content);
+            } catch (e) {
+                parsed = { description: content, suggestedPriority: determineFallbackPriority(title) };
+            }
+
+            res.status(200).json({
+                description: parsed.description || content,
+                suggestedPriority: parsed.suggestedPriority || 'medium',
+                fallback: false,
+                disclaimer: "🤖 AI-Generated: Suggestions are produced by AI and should be reviewed and refined by the user."
+            });
+
+        } catch (apiErr) {
+            console.warn(`[AI API Warning]: External AI service call failed (${apiErr.message}). Triggering graceful degradation.`);
+            return res.status(200).json({
+                description: generateSmartFallback(title),
+                suggestedPriority: determineFallbackPriority(title),
+                fallback: true,
+                disclaimer: "⚠️ Note: External AI service unavailable. Showing automated fallback suggestion."
+            });
+        }
+
+    } catch (err) {
+        res.status(200).json({
+            description: generateSmartFallback(req.body ? req.body.title : 'Task'),
+            suggestedPriority: 'medium',
+            fallback: true,
+            disclaimer: "⚠️ Note: Fallback suggestion provided."
+        });
+    }
+});
+
 // ===============================================
 // --- PROTECTED TASK ROUTES (Middleware Chain) ---
 // ===============================================

@@ -34,4 +34,15 @@ describe('Task Manager API - CI Automated Test Suite (Practical 12)', () => {
         expect(res.statusCode).toBe(404);
         expect(res.body).toHaveProperty('error', 'Not Found');
     });
+
+    // Test 5 (Practical 13): AI Description Generation with Graceful Degradation
+    test('POST /api/ai/generate-description should return 200 and description', async () => {
+        const res = await request(app)
+            .post('/api/ai/generate-description')
+            .send({ title: 'Design responsive navbar' });
+        expect(res.statusCode).toBe(200);
+        expect(res.body).toHaveProperty('description');
+        expect(res.body).toHaveProperty('suggestedPriority');
+        expect(res.body).toHaveProperty('disclaimer');
+    });
 });
