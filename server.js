@@ -14,6 +14,8 @@ const {
     validateTaskInput
 } = require('./middleware/validator');
 const cache = require('./cache');
+const taskEvents = require('./events');
+require('./listeners');
 
 // In-Memory Cache Stats Tracking (Practical 9 Supplementary Problem 2)
 let cacheHits = 0;
@@ -308,7 +310,14 @@ app.post('/tasks', authenticateToken, validateTaskInput, async (req, res, next) 
         // Invalidate cached task list so newly added task is immediately visible
         cache.del(`tasks_${req.user.id}`);
 
+        // Practical 10: Asynchronous event emission (Response sent immediately before event listener executes)
+        console.log(`[API] Response sent at ${new Date().toISOString()} for Task ID: ${savedTask._id}`);
         res.status(201).json(savedTask);
+
+        // Emit 'task-created' event asynchronously without blocking the client response
+        setImmediate(() => {
+            taskEvents.emit('task-created', savedTask);
+        });
     } catch (err) {
         next(err);
     }
@@ -385,9 +394,20 @@ app.delete('/tasks/:id', authenticateToken, validateTaskId, async (req, res, nex
         cache.del(`tasks_${req.user.id}`);
         cache.del(`task_${req.params.id}`);
 
+        // Practical 10 (Supplementary Problem 1): Asynchronous event emission for task deletion
+        console.log(`[API] Delete response sent at ${new Date().toISOString()} for Task ID: ${deletedTask._id}`);
         res.status(200).json({
             message: "Task successfully deleted.",
             task: deletedTask
+        });
+
+        // Emit 'task-deleted' event asynchronously
+        setImmediate(() => {
+            taskEvents.emit('task-deleted', {
+                id: deletedTask._id,
+                title: deletedTask.title,
+                user: req.user.id
+            });
         });
     } catch (err) {
         next(err);
