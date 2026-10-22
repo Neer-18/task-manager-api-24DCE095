@@ -3,10 +3,10 @@ const app = require('../server');
 
 describe('Task Manager API - CI Automated Test Suite (Practical 12)', () => {
 
-    // Test 1: Public Cache Diagnostics Endpoint (Deliberately failing test for CI failure demonstration)
+    // Test 1: Public Cache Diagnostics Endpoint (Restored & Fixed)
     test('GET /cache/stats should return 200 and cache diagnostics', async () => {
         const res = await request(app).get('/cache/stats');
-        expect(res.statusCode).toBe(500); // Deliberate failure: expecting 500 instead of 200
+        expect(res.statusCode).toBe(200); // Fixed: expecting 200 OK
         expect(res.body).toHaveProperty('status', 'active');
         expect(res.body).toHaveProperty('stdTTL', 60);
         expect(res.body).toHaveProperty('hitRatio');
