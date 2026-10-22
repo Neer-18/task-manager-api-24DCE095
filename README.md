@@ -1,5 +1,7 @@
 # Task Manager RESTful API
 
+[![CI Pipeline](https://github.com/Neer-18/task-manager-api-24DCE095/actions/workflows/ci.yml/badge.svg)](https://github.com/Neer-18/task-manager-api-24DCE095/actions/workflows/ci.yml)
+
 A complete RESTful backend API for task management built using **Node.js, Express, and a custom middleware pipeline**.
 
 ---
@@ -321,4 +323,40 @@ docker compose down -v
 | **Frontend** | `http://localhost:5173` | React Portfolio & Task Management UI (Vite) |
 | **Backend** | `http://localhost:5000` | RESTful Express API with Caching & Event Bus |
 | **MongoDB** | `localhost:27017` | Persistent NoSQL database store |
+
+---
+
+## 🔄 Practical 12: CI/CD Pipeline with GitHub Actions
+
+### 🎯 Objective
+Automate testing and continuous integration of the Task Management API using GitHub Actions on every push and pull request to the `main` branch.
+
+### 🏛️ Pipeline Workflow Architecture
+```
+git push origin main (or Pull Request)
+          │
+          ▼
+GitHub Actions Runner (ubuntu-latest)
+  ├── 1. Checkout Code (actions/checkout@v4)
+  ├── 2. Set up Node.js 18 LTS (actions/setup-node@v4)
+  ├── 3. Install Dependencies (npm install)
+  └── 4. Run Automated Test Suite (npm test)
+          ├── GET /cache/stats (200 OK)
+          ├── GET /tasks without JWT (401 Unauthorized)
+          ├── POST /login empty body (400 Bad Request)
+          └── GET /undefined-path (404 Not Found)
+          │
+          ▼
+Status: Green Checkmark (PASS) or Red X (FAIL)
+```
+
+### 🧪 Automated Testing Commands
+```bash
+# Run automated tests locally using Jest and Supertest
+npm test
+
+# Run tests with coverage reporting
+npm test -- --coverage
+```
+
 

@@ -459,8 +459,13 @@ app.use((err, req, res, next) => {
     });
 });
 
-// Start the server
-app.listen(PORT, () => {
-    console.log(`🚀 Task Manager API running on port ${PORT}`);
-    console.log(`   Local URL: http://localhost:${PORT}`);
-});
+// Start the server only when not running in automated test mode
+let server;
+if (process.env.NODE_ENV !== 'test') {
+    server = app.listen(PORT, () => {
+        console.log(`🚀 Task Manager API running on port ${PORT}`);
+        console.log(`   Local URL: http://localhost:${PORT}`);
+    });
+}
+
+module.exports = app;
