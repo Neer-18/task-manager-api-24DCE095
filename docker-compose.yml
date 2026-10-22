@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  # 1. Database Service
+  mongodb:
+    image: mongo:6-jammy
+    container_name: taskmanager-api-db
+    restart: always
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: taskmanager
+    volumes:
+      # Supplementary Problem 3: Named volume for data persistence across restarts
+      - mongo-data:/data/db
+    networks:
+      - task-network
+
+  # 2. Express Backend API Service
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: taskmanager-api-server
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: 5000
+      MONGO_URI: mongodb://mongodb:27017/taskmanager
+      JWT_SECRET: supersecretjwtkey_docker_24dce095
+    depends_on:
+      - mongodb
+    networks:
+      - task-network
+
+# Internal bridge network for inter-container communication
+networks:
+  task-network:
+    driver: bridge
+
+# Named volume for persistent database storage
+volumes:
+  mongo-data:
+    driver: local

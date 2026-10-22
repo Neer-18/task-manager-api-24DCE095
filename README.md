@@ -243,3 +243,82 @@ Empirical response times measured on `GET /tasks` comparing cold database roundt
    - For interactive task management, a TTL of 30–60 seconds strikes the optimal balance. A longer TTL yields higher hit ratios and reduces database load, but increases the risk of serving stale data if external database updates occur. A shorter TTL ensures fresh data but increases database read frequency.
 3. **Why is `node-cache` (in-memory) not suitable for multi-server deployments?**
    - `node-cache` stores data in the local Node.js process heap memory. In multi-instance or load-balanced environments (e.g., Kubernetes, PM2 clusters), each server maintains an isolated memory space. An update on Server A would not invalidate the cache on Server B, resulting in inconsistent data. Distributed caching solutions like **Redis** or **Memcached** are required for horizontal scaling.
+
+---
+
+## ⚡ Practical 10: Asynchronous Processing with Event-Driven Architecture
+
+### 🎯 Objective
+Implement non-blocking background notification processing using Node.js built-in `EventEmitter` without external dependencies.
+
+### 🏛️ Architecture & Event Flow
+```
+POST /tasks (or DELETE /tasks/:id)
+      │
+      ▼
+1. Persist/Delete in MongoDB Atlas
+2. Invalidate In-Memory Cache
+3. Send HTTP Response Immediately (201 / 200) ──► Client Receives Fast Response (~75ms)
+      │
+      ▼ (Asynchronously scheduled via setImmediate)
+TaskEvents.emit('task-created' | 'task-deleted', payload)
+      │
+      ▼
+Event Listeners (listeners.js)
+  ├── 'task-created' ──► Simulated slow notification (2000ms delay, completes non-blocking)
+  ├── 'task-deleted' ──► Background audit log archiving (1500ms delay)
+  └── 'error'        ──► Graceful error handler preventing Node.js process crash
+```
+
+---
+
+## 🐳 Practical 11: Containerization with Docker and Docker Compose
+
+### 🎯 Objective
+Containerize the full-stack application using Docker and orchestrate services (React Frontend, Node/Express Backend, MongoDB) using Docker Compose.
+
+### 🏛️ Multi-Container Architecture
+```
+docker-compose.yml
+├── mongodb   (Official mongo:6-jammy image, port 27017:27017)
+│   └── Volume: mongo-data:/data/db (Persistent Storage)
+├── backend   (Node 18 Alpine, port 5000:5000)
+│   └── Connects to mongodb via service name: mongodb://mongodb:27017/taskmanager
+└── frontend  (Multi-stage build, React + Vite, port 5173:5173)
+    └── Connects to backend via host port mapping (http://localhost:5000)
+
+Network: app-network (Bridge)
+```
+
+### 🚀 Quick Start with Docker Compose
+
+To build and run the entire full-stack application with a single command:
+
+```bash
+# Build images and start all 3 services in the foreground
+docker compose up --build
+
+# Or run in detached background mode
+docker compose up --build -d
+
+# Check running container status
+docker compose ps
+
+# View real-time aggregated logs
+docker compose logs -f
+
+# Stop and remove containers, networks, and keep persistent volume data
+docker compose down
+
+# Stop and remove everything including volumes
+docker compose down -v
+```
+
+### 📦 Containerized Endpoints & Services
+
+| Service | Port Mapping | Description |
+| :--- | :--- | :--- |
+| **Frontend** | `http://localhost:5173` | React Portfolio & Task Management UI (Vite) |
+| **Backend** | `http://localhost:5000` | RESTful Express API with Caching & Event Bus |
+| **MongoDB** | `localhost:27017` | Persistent NoSQL database store |
+
